@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.environ["DATABASE_URL"]
+MODELLO_EMBBEDING = "bge-m3"
+# MODELLO_EMBBEDING = "nomic-embed-text"
 
 def costruisci_parser():
     parser = argparse.ArgumentParser(description="Spezza un file PDF.")
@@ -115,7 +117,7 @@ def _insert_chunk(connection, nome_doc, pagina, chunk):
     
     r = requests.post(
         "http://localhost:11434/api/embed",
-        json={"model": "nomic-embed-text", "input": "search_document: " +chunk},
+        json={"model": MODELLO_EMBBEDING, "input": chunk},
     )
     vettore = r.json()["embeddings"][0]
 
@@ -127,7 +129,7 @@ def _insert_chunk(connection, nome_doc, pagina, chunk):
 def cerca(connection, domanda, k=5):
     r = requests.post(
         "http://localhost:11434/api/embed",
-        json={"model": "nomic-embed-text", "input": "search_query: " + domanda},
+        json={"model": MODELLO_EMBBEDING, "input": domanda},
     )
     vettore = numpy.array(r.json()["embeddings"][0])
     
