@@ -1,6 +1,6 @@
 # rag-locale
 
-Ricerca semantica su documenti PDF che gira tutta in locale: modello di embedding su Ollama, vettori su Postgres con pgvector, nessun servizio cloud. È la prima metà di un RAG (indicizzazione e retrieval). La generazione della risposta con un LLM non c'è ancora.
+Ricerca semantica su documenti PDF che gira tutta in locale: modello di embedding su Ollama, vettori su Postgres con pgvector, nessun servizio cloud. È la prima metà di un RAG (indicizzazione e retrieval). La generazione della risposta con un LLM restaancora da implementare.
 
 L'ho scritto in pochi giorni per capire come funziona davvero un RAG, partendo da zero, e l'ho provato su un contratto collettivo nazionale (CCNL metalmeccanici) di circa 100 pagine.
 
@@ -56,7 +56,7 @@ python main.py                                # fa una domanda
 pytest -v                                     # test
 ```
 
-Reindicizzare lo stesso documento non crea duplicati: le sue righe vengono cancellate e reinserite nella stessa transazione. Se qualcosa va storto si fa rollback e il documento resta com'era.
+Si può reindicizzare lo stesso documento non crea duplicati: le sue righe vengono cancellate e reinserite nella stessa transazione. Se qualcosa va storto si fa rollback e il documento resta com'era.
 
 ## Scelte e cose imparate
 
