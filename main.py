@@ -115,7 +115,7 @@ def _insert_chunk(connection, nome_doc, pagina, chunk):
     
     r = requests.post(
         "http://localhost:11434/api/embed",
-        json={"model": "nomic-embed-text", "input": "search_document:" +chunk},
+        json={"model": "nomic-embed-text", "input": "search_document: " +chunk},
     )
     vettore = r.json()["embeddings"][0]
 
@@ -123,12 +123,11 @@ def _insert_chunk(connection, nome_doc, pagina, chunk):
         "INSERT INTO chunks (documento, pagina, testo, embedding) VALUES (%s, %s, %s, %s)",
         (nome_doc, pagina, chunk, numpy.array(vettore)),
     )
-    conn.commit()
 
 def cerca(connection, domanda, k=5):
     r = requests.post(
         "http://localhost:11434/api/embed",
-        json={"model": "nomic-embed-text", "input": "search_query:" + domanda},
+        json={"model": "nomic-embed-text", "input": "search_query: " + domanda},
     )
     vettore = numpy.array(r.json()["embeddings"][0])
     
@@ -159,7 +158,6 @@ if __name__ == "__main__":
                         _insert_chunk(connection=conn, nome_doc=nome_documento, pagina=numero, chunk=chunk)
                 
         except Exception as err:
-            conn.rollback()
             print(f"Errore durante indicizzazione: {err}")
             sys.exit(1)
     else:
