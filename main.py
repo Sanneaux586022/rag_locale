@@ -1,15 +1,22 @@
 import argparse
+import os
 import pathlib
 import sys
 import pymupdf
 from collections import Counter
+import requests
+import psycopg
+from pgvector.psycopg import register_vector
+import numpy
+from dotenv import load_dotenv
+load_dotenv()
 
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 def costruisci_parser():
     parser = argparse.ArgumentParser(description="Spezza un file PDF.")
     parser.add_argument(
         "--percorso",
-        required=True,
         type=valida_nome,
         help="Percorso del file da spezzare",
     )
@@ -86,16 +93,15 @@ def _chunk(testo: str, size: int, overlap: int) -> list[str]:
     if size <= 0 or overlap < 0:
         raise ValueError("inserire valori di overlap o size > 0.")
     if overlap >= size:
-        raise ValueError("Overlap non può essere >= di size.")    
+        raise ValueError("Overlap non può essere >= di size.")
     if not testo:
-        return []    
+        return []
     if len(parole) < size:
         return [" ".join(parole)]
 
     i = 0
-    lung= len(parole)
     while i + size < len(parole):
-        chunk = parole[i: i + size]
+        chunk = parole[i : i + size]
         if len(chunk) == size:
             lista_chunk.append(" ".join(chunk))
         i += size - overlap
@@ -105,21 +111,61 @@ def _chunk(testo: str, size: int, overlap: int) -> list[str]:
     return lista_chunk
 
 
+def _insert_chunk(connection, nome_doc, pagina, chunk):
+    
+    r = requests.post(
+        "http://localhost:11434/api/embed",
+        json={"model": "nomic-embed-text", "input": "search_document:" +chunk},
+    )
+    vettore = r.json()["embeddings"][0]
+
+    connection.execute(
+        "INSERT INTO chunks (documento, pagina, testo, embedding) VALUES (%s, %s, %s, %s)",
+        (nome_doc, pagina, chunk, numpy.array(vettore)),
+    )
+    conn.commit()
+
+def cerca(connection, domanda, k=5):
+    r = requests.post(
+        "http://localhost:11434/api/embed",
+        json={"model": "nomic-embed-text", "input": "search_query:" + domanda},
+    )
+    vettore = numpy.array(r.json()["embeddings"][0])
+    
+    sql = """
+            SELECT testo, documento, pagina, embedding <=> %s AS distanza
+            FROM chunks
+            ORDER BY embedding <=> %s
+            LIMIT %s
+        """
+    results = connection.execute(sql, (vettore, vettore,k)).fetchall()
+
+    return results
+
+
 if __name__ == "__main__":
     args = costruisci_parser().parse_args()
-    try:
-        lista_risultati = estrae_pagine(args.percorso)
-        intestazioni = trova_intestazioni(lista_risultati)
-        print(f"intestazioni: {intestazioni}")
+    if args.percorso:
+        nome_documento = args.percorso.name
+        try:
+            lista_risultati = estrae_pagine(args.percorso)
+            intestazioni = trova_intestazioni(lista_risultati)
+            with psycopg.connect(DATABASE_URL) as conn:
+                register_vector(conn)
+                conn.execute("DELETE FROM chunks WHERE documento = %s", (nome_documento,))
+                for numero, pagina in lista_risultati:
+                    testo_pulito = pulisci_pagina(testo=pagina, intestazioni=intestazioni)
+                    for chunk in _chunk(testo_pulito, size=200, overlap=40):
+                        _insert_chunk(connection=conn, nome_doc=nome_documento, pagina=numero, chunk=chunk)
+                
+        except Exception as err:
+            conn.rollback()
+            print(f"Errore durante indicizzazione: {err}")
+            sys.exit(1)
+    else:
+        domanda = input("Fai una domanda sui documenti aziendali... ")
+        with psycopg.connect(DATABASE_URL) as conn:
+            register_vector(conn)
+            risposte = cerca(connection=conn, domanda=domanda.strip().lower())
 
-        testo = "3\nTitolo\n1.\nPrimo comma\n1.\nAltro comma\n\nCopyright"
-        print(pulisci_pagina(testo, {"Titolo", "Copyright"}))
-        print(pulisci_pagina(testo, set()))
-        # for numero, pagina in lista_risultati:
-        #     testo_pulito = pulisci_pagina(testo=pagina, intestazioni=intestazioni)
-        #     print(f"testo_pulito: {testo_pulito}")
-        #     break
-
-    except Exception as err:
-        print(f"Errore in estrae pagine : {err}")
-        sys.exit(1)
+            print(f"risposte : {risposte}")
