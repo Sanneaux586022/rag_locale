@@ -1,6 +1,6 @@
 # rag-locale
 
-Ricerca semantica su documenti PDF che gira tutta in locale: modello di embedding su Ollama, vettori su Postgres con pgvector, nessun servizio cloud. È la prima metà di un RAG (indicizzazione e retrieval). La generazione della risposta con un LLM restaancora da implementare.
+Ricerca semantica su documenti PDF che gira tutta in locale: modello di embedding su Ollama, vettori su Postgres con pgvector, nessun servizio cloud. È la prima metà di un RAG (indicizzazione e retrieval). La generazione della risposta con un LLM resta ancora da implementare.
 
 L'ho scritto in pochi giorni per capire come funziona davvero un RAG, partendo da zero, e l'ho provato su un contratto collettivo nazionale (CCNL metalmeccanici) di circa 100 pagine.
 

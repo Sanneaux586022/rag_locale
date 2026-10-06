@@ -9,11 +9,13 @@ import psycopg
 from pgvector.psycopg import register_vector
 import numpy
 from dotenv import load_dotenv
+
 load_dotenv()
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 MODELLO_EMBBEDING = "bge-m3"
 # MODELLO_EMBBEDING = "nomic-embed-text"
+
 
 def costruisci_parser():
     parser = argparse.ArgumentParser(description="Spezza un file PDF.")
@@ -83,12 +85,15 @@ def pulisci_pagina(testo: str, intestazioni: set[str]) -> str:
         raise ValueError("Inserire un testo valido.")
     righe = [line.strip() for line in testo.splitlines()]
     righe_pulite = [r for r in righe if r and not r.isdigit() and r not in intestazioni]
-    # text_page = [line.strip() for line in testo.splitlines() if line.strip() and not line.strip().isdigit() and line.strip() not in intestazioni]
 
     return "\n".join(righe_pulite)
 
 
 def _chunk(testo: str, size: int, overlap: int) -> list[str]:
+    """ "
+    Prende un testo già pulito, lo divide in pezzi di size , scorrendolo di size - overlap.
+    E viene ritornata la lista di stringhe cosi divise.
+    """
 
     parole = testo.split()
     lista_chunk = []
@@ -113,35 +118,68 @@ def _chunk(testo: str, size: int, overlap: int) -> list[str]:
     return lista_chunk
 
 
-def _insert_chunk(connection, nome_doc, pagina, chunk):
-    
-    r = requests.post(
-        "http://localhost:11434/api/embed",
-        json={"model": MODELLO_EMBBEDING, "input": chunk},
-    )
-    vettore = r.json()["embeddings"][0]
+def _insert_chunk(connection, nome_doc: str, pagina: int, chunk: str):
+
+    vettore = calcola_embedding(chunk)
 
     connection.execute(
         "INSERT INTO chunks (documento, pagina, testo, embedding) VALUES (%s, %s, %s, %s)",
         (nome_doc, pagina, chunk, numpy.array(vettore)),
     )
 
-def cerca(connection, domanda, k=5):
+
+def calcola_embedding(testo: str)-> numpy.array:
     r = requests.post(
         "http://localhost:11434/api/embed",
-        json={"model": MODELLO_EMBBEDING, "input": domanda},
+        json={"model": MODELLO_EMBBEDING, "input": testo},
     )
-    vettore = numpy.array(r.json()["embeddings"][0])
-    
+
+    return numpy.array(r.json()["embeddings"][0])
+
+
+def cerca(connection, domanda: str, k=5):
+    vettore = calcola_embedding(domanda)
+
     sql = """
             SELECT testo, documento, pagina, embedding <=> %s AS distanza
             FROM chunks
             ORDER BY embedding <=> %s
             LIMIT %s
         """
-    results = connection.execute(sql, (vettore, vettore,k)).fetchall()
+    results = connection.execute(sql, (vettore, vettore, k)).fetchall()
 
     return results
+
+
+def formatta_risposte(risposte: list[str]) -> str:
+    res = ""
+    for contatore, risp in enumerate(risposte, start=1):
+        res += f"[{contatore}] {risp[1]} , pagina {risp[2]}\n {risp[0]}\n."
+    return res
+
+
+def costruisci_prompt(question: str, answers: list[str]) -> str:
+    testo_risposte = formatta_risposte(answers)
+    print(testo_risposte)
+    return f"""
+        In base alla domanda fatta : {question}, genera la risposta più breve possibile 
+        in italiano. Non devi inventare nulla e solo fare riferimento alle risposte possibili:
+        {testo_risposte} devi anche citare il numero dell'estratto , la fonte ed il titolo del documento
+        e presentarli come da documento.se non lo sai dillo.
+    """
+
+
+def genera_risposta(a: list[str], q: str) -> str:
+    r = requests.post(
+        "http://localhost:11434/api/generate",
+        json={
+            "model": "llama3.2:3b",
+            "prompt": costruisci_prompt(question=q, answers=a),
+            "stream": False,
+        },
+    )
+    risposta = r.json()["response"]
+    return risposta
 
 
 if __name__ == "__main__":
@@ -153,12 +191,21 @@ if __name__ == "__main__":
             intestazioni = trova_intestazioni(lista_risultati)
             with psycopg.connect(DATABASE_URL) as conn:
                 register_vector(conn)
-                conn.execute("DELETE FROM chunks WHERE documento = %s", (nome_documento,))
+                conn.execute(
+                    "DELETE FROM chunks WHERE documento = %s", (nome_documento,)
+                )
                 for numero, pagina in lista_risultati:
-                    testo_pulito = pulisci_pagina(testo=pagina, intestazioni=intestazioni)
+                    testo_pulito = pulisci_pagina(
+                        testo=pagina, intestazioni=intestazioni
+                    )
                     for chunk in _chunk(testo_pulito, size=200, overlap=40):
-                        _insert_chunk(connection=conn, nome_doc=nome_documento, pagina=numero, chunk=chunk)
-                
+                        _insert_chunk(
+                            connection=conn,
+                            nome_doc=nome_documento,
+                            pagina=numero,
+                            chunk=chunk,
+                        )
+
         except Exception as err:
             print(f"Errore durante indicizzazione: {err}")
             sys.exit(1)
@@ -168,4 +215,5 @@ if __name__ == "__main__":
             register_vector(conn)
             risposte = cerca(connection=conn, domanda=domanda.strip().lower())
 
-            print(f"risposte : {risposte}")
+            risposta = genera_risposta(q=domanda, a=risposte)
+            print(f"{risposta}")

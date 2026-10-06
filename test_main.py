@@ -1,4 +1,4 @@
-from main import _chunk
+from main import _chunk, cerca
 import pytest
 
 
@@ -14,3 +14,6 @@ def test_overlap_maggiore_di_size():
 def test_size_negativo():
     with pytest.raises(ValueError):
         _chunk("", size=-5, overlap=0)
+
+def test_estrazione_risposte():
+    assert cerca()
