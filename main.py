@@ -1,20 +1,14 @@
 import argparse
-import os
 import pathlib
 import sys
-import pymupdf
-from collections import Counter
-import requests
+
 import psycopg
-from pgvector.psycopg import register_vector
-import numpy
-from dotenv import load_dotenv
 
-load_dotenv()
-
-DATABASE_URL = os.environ["DATABASE_URL"]
-MODELLO_EMBBEDING = "bge-m3"
-# MODELLO_EMBBEDING = "nomic-embed-text"
+import config
+from archivio import ArchivioChunk
+from client_ollama import ClientOllama
+from pdf_utils import dividi_in_chunk, estrae_pagine, pulisci_pagina, trova_intestazioni
+from prompt import costruisci_prompt, formatta_risposte
 
 
 def costruisci_parser():
@@ -41,179 +35,39 @@ def valida_nome(percorso: str) -> pathlib.Path:
     return path
 
 
-def estrae_pagine(percorso: pathlib.Path) -> list[tuple[int, str]]:
-    """
-    Riceve il percorso di un file PDF e restituisce le pagine non vuote
-    come lista di tuple (numero, testo), con numerazione da 1.
-    """
-    lista_risultati = []
-    with pymupdf.open(percorso) as file:
-
-        for contatore, page in enumerate(file, start=1):
-            text = page.get_text().strip()
-            if text:
-                lista_risultati.append((contatore, text))
-    return lista_risultati
+def indicizza(percorso: pathlib.Path, client: ClientOllama, archivio: ArchivioChunk):
+    """Cancella e reinserisce i chunk del documento, nella stessa transazione."""
+    nome_documento = percorso.name
+    pagine = estrae_pagine(percorso)
+    intestazioni = trova_intestazioni(pagine)
+    archivio.cancella_documento(nome_documento)
+    for numero, testo in pagine:
+        testo_pulito = pulisci_pagina(testo=testo, intestazioni=intestazioni)
+        for chunk in dividi_in_chunk(testo_pulito, size=200, overlap=40):
+            archivio.inserisci(nome_documento, numero, chunk, client.embedding(chunk))
 
 
-def trova_intestazioni(pagine: list[tuple[int, str]]) -> set[str]:
-    """
-    Riceve le pagine non vuote come (numero, testo), come restituite da estrae_pagine.
-    Restituisce le righe che compaiono all'inizio o alla fine di più della metà delle pagine:
-    intestazioni e piè di pagina ripetuti.
-    """
-    if not pagine:
-        raise ValueError("Nessuna lista ricevuta.")
-
-    counter = Counter()
-    for _, text in pagine:
-        text_page = [line.strip() for line in text.splitlines() if line.strip()]
-        righe_bordo = set(text_page[:5]) | set(text_page[-5:])
-        counter.update(righe_bordo)
-
-    return set(
-        [chiave for chiave, valore in counter.items() if valore > len(pagine) // 2]
-    )
-
-
-def pulisci_pagina(testo: str, intestazioni: set[str]) -> str:
-    """
-    Prende il testo gia estratto da estrae pagine e le intestazioni di trova intestazioni,
-    E ritorna il testo della pagina senza le intestazioni e senza il numero di pagina.
-    """
-    if not testo:
-        raise ValueError("Inserire un testo valido.")
-    righe = [line.strip() for line in testo.splitlines()]
-    righe_pulite = [r for r in righe if r and not r.isdigit() and r not in intestazioni]
-
-    return "\n".join(righe_pulite)
-
-
-def _chunk(testo: str, size: int, overlap: int) -> list[str]:
-    """ "
-    Prende un testo già pulito, lo divide in pezzi di size , scorrendolo di size - overlap.
-    E viene ritornata la lista di stringhe cosi divise.
-    """
-
-    parole = testo.split()
-    lista_chunk = []
-    if size <= 0 or overlap < 0:
-        raise ValueError("inserire valori di overlap o size > 0.")
-    if overlap >= size:
-        raise ValueError("Overlap non può essere >= di size.")
-    if not testo:
-        return []
-    if len(parole) < size:
-        return [" ".join(parole)]
-
-    i = 0
-    while i + size < len(parole):
-        chunk = parole[i : i + size]
-        if len(chunk) == size:
-            lista_chunk.append(" ".join(chunk))
-        i += size - overlap
-    if overlap < len(parole) - i <= size:
-        lista_chunk.append(" ".join(parole[i:]))
-
-    return lista_chunk
-
-
-def _insert_chunk(connection, nome_doc: str, pagina: int, chunk: str):
-
-    vettore = calcola_embedding(chunk)
-
-    connection.execute(
-        "INSERT INTO chunks (documento, pagina, testo, embedding) VALUES (%s, %s, %s, %s)",
-        (nome_doc, pagina, chunk, numpy.array(vettore)),
-    )
-
-
-def calcola_embedding(testo: str)-> numpy.array:
-    r = requests.post(
-        "http://localhost:11434/api/embed",
-        json={"model": MODELLO_EMBBEDING, "input": testo},
-    )
-
-    return numpy.array(r.json()["embeddings"][0])
-
-
-def cerca(connection, domanda: str, k=5):
-    vettore = calcola_embedding(domanda)
-
-    sql = """
-            SELECT testo, documento, pagina, embedding <=> %s AS distanza
-            FROM chunks
-            ORDER BY embedding <=> %s
-            LIMIT %s
-        """
-    results = connection.execute(sql, (vettore, vettore, k)).fetchall()
-
-    return results
-
-
-def formatta_risposte(risposte: list[str]) -> str:
-    res = ""
-    for contatore, risp in enumerate(risposte, start=1):
-        res += f"[{contatore}] {risp[1]} , pagina {risp[2]}\n {risp[0]}\n."
-    return res
-
-
-def costruisci_prompt(question: str, answers: list[str]) -> str:
-    testo_risposte = formatta_risposte(answers)
-    print(testo_risposte)
-    return f"""
-        In base alla domanda fatta : {question}, genera la risposta più breve possibile 
-        in italiano. Non devi inventare nulla e solo fare riferimento alle risposte possibili:
-        {testo_risposte} devi anche citare il numero dell'estratto , la fonte ed il titolo del documento
-        e presentarli come da documento.se non lo sai dillo.
-    """
-
-
-def genera_risposta(a: list[str], q: str) -> str:
-    r = requests.post(
-        "http://localhost:11434/api/generate",
-        json={
-            "model": "llama3.2:3b",
-            "prompt": costruisci_prompt(question=q, answers=a),
-            "stream": False,
-        },
-    )
-    risposta = r.json()["response"]
-    return risposta
+def chiedi(domanda: str, client: ClientOllama, archivio: ArchivioChunk) -> str:
+    risposte = archivio.cerca(client.embedding(domanda.strip().lower()))
+    print(formatta_risposte(risposte))
+    return client.genera(costruisci_prompt(question=domanda, answers=risposte))
 
 
 if __name__ == "__main__":
     args = costruisci_parser().parse_args()
+    client = ClientOllama(
+        url=config.URL_LLM_LOCAL_API,
+        modello_embedding=config.MODELLO_EMBEDDING_ITA,
+        modello_generazione=config.MODELLO_GENERAZIONE,
+    )
     if args.percorso:
-        nome_documento = args.percorso.name
         try:
-            lista_risultati = estrae_pagine(args.percorso)
-            intestazioni = trova_intestazioni(lista_risultati)
-            with psycopg.connect(DATABASE_URL) as conn:
-                register_vector(conn)
-                conn.execute(
-                    "DELETE FROM chunks WHERE documento = %s", (nome_documento,)
-                )
-                for numero, pagina in lista_risultati:
-                    testo_pulito = pulisci_pagina(
-                        testo=pagina, intestazioni=intestazioni
-                    )
-                    for chunk in _chunk(testo_pulito, size=200, overlap=40):
-                        _insert_chunk(
-                            connection=conn,
-                            nome_doc=nome_documento,
-                            pagina=numero,
-                            chunk=chunk,
-                        )
-
+            with psycopg.connect(config.DATABASE_URL) as conn:
+                indicizza(args.percorso, client, ArchivioChunk(conn))
         except Exception as err:
             print(f"Errore durante indicizzazione: {err}")
             sys.exit(1)
     else:
         domanda = input("Fai una domanda sui documenti aziendali... ")
-        with psycopg.connect(DATABASE_URL) as conn:
-            register_vector(conn)
-            risposte = cerca(connection=conn, domanda=domanda.strip().lower())
-
-            risposta = genera_risposta(q=domanda, a=risposte)
-            print(f"{risposta}")
+        with psycopg.connect(config.DATABASE_URL) as conn:
+            print(chiedi(domanda, client, ArchivioChunk(conn)))
