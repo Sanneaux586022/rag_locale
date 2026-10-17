@@ -1,6 +1,6 @@
 # rag-locale
 
-Ricerca semantica su documenti PDF che gira tutta in locale: modello di embedding su Ollama, vettori su Postgres con pgvector, nessun servizio cloud. È la prima metà di un RAG (indicizzazione e retrieval). La generazione della risposta con un LLM resta ancora da implementare.
+RAG su documenti PDF che gira tutto in locale: embedding e generazione su Ollama, vettori su Postgres con pgvector, nessun servizio cloud. Indicizza i PDF, recupera i passaggi più vicini alla domanda e fa scrivere la risposta a un LLM locale citando documento e pagina.
 
 L'ho scritto in pochi giorni per capire come funziona davvero un RAG, partendo da zero, e l'ho provato su un contratto collettivo nazionale (CCNL metalmeccanici) di circa 100 pagine.
 
@@ -16,16 +16,32 @@ L'ho scritto in pochi giorni per capire come funziona davvero un RAG, partendo d
 
 **Ricerca**, a ogni domanda: calcola l'embedding della domanda con lo stesso modello e restituisce i 5 chunk più vicini (distanza coseno, operatore `<=>` di pgvector) con documento e pagina.
 
+**Risposta**: i chunk trovati finiscono in un prompt insieme alla domanda, con l'istruzione di rispondere solo su quella base e di citare le fonti. Il prompt va a `llama3.2:3b` su Ollama.
+
+## Struttura del codice
+
+| File | Contenuto |
+|---|---|
+| `main.py` | riga di comando: `indicizza()` e `chiedi()` |
+| `pdf_utils.py` | estrazione delle pagine, pulizia di intestazioni e piè di pagina, divisione in chunk |
+| `client_ollama.py` | classe `ClientOllama`: embedding e generazione tramite le API di Ollama |
+| `archivio.py` | classe `ArchivioChunk`: tutto l'SQL sulla tabella `chunks` |
+| `prompt.py` | formattazione dei risultati e costruzione del prompt |
+| `config.py` | lettura delle variabili d'ambiente dal `.env` |
+
+Sono classi solo le parti che hanno uno stato da portarsi dietro: il client (URL e modelli) e l'archivio (la connessione). Le funzioni su PDF e testo restano funzioni pure, facili da testare senza database né Ollama.
+
 ## Requisiti
 
 - Docker con NVIDIA Container Toolkit (il modello gira sulla GPU)
-- Python 3.12
+- Python 3.12 o successivo
 
 ## Avvio
 
 ```bash
 docker run -d --gpus=all -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/ollama
 docker exec -it ollama ollama pull bge-m3
+docker exec -it ollama ollama pull llama3.2:3b
 
 docker run -d --name pgvector -e POSTGRES_PASSWORD=dev -p 5432:5432 \
   -v pgdata:/var/lib/postgresql/data pgvector/pgvector:pg16
@@ -43,8 +59,16 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install pymupdf "psycopg[binary]" pgvector requests numpy python-dotenv pytest
 
-cp .env.example .env    # contiene DATABASE_URL
+cp .env.example .env
 ```
+
+Variabili del `.env`:
+
+- `DATABASE_URL`: stringa di connessione a Postgres;
+- `URL_LLM_LOCAL_API`: indirizzo delle API di Ollama, per esempio `http://localhost:11434/api`;
+- `MODELLO_EMBEDDING_ITA`: modello di embedding usato (`bge-m3`);
+- `MODELLO_EMBEDDING_ENG`: modello alternativo, per ora non usato;
+- `MODELLO_GENERAZIONE`: facoltativa, se manca vale `llama3.2:3b`.
 
 I PDF non sono nel repository. Mettili nella cartella `pdf/`, che è esclusa da git.
 
@@ -70,11 +94,11 @@ Si può reindicizzare lo stesso documento non crea duplicati: le sue righe vengo
 
 ## Limiti e prossimi passi
 
-- **Generazione**: prompt con domanda e chunk recuperati, istruzione di rispondere solo su quella base citando le fonti, chiamata a un LLM locale su Ollama.
 - **Permessi**: un campo con il gruppo autorizzato a leggere ogni documento, filtrato direttamente nella query di ricerca, così l'LLM non vede mai testi che l'utente non può aprire.
 - **Valutazione**: una serie di domande con risposta nota, per misurare i cambi di modello o di chunking invece di giudicarli a occhio su una domanda.
 - **Sommario**: le pagine dell'indice finiscono nei chunk. Sulle domande provate finora non hanno disturbato, ma vanno filtrate.
 - **Chunking sui confini degli articoli** invece che a parole fisse.
 - Le righe composte solo da cifre vengono tolte come numeri di pagina, anche se in mezzo alla pagina potrebbero essere un importo o un anno.
+- **Embedding a gruppi**: oggi ogni chunk è una richiesta HTTP separata, mentre `/api/embed` accetta anche una lista di testi.
 # INFO 
 CCNL: https://file.conflavoro.it/pdf/ccnl/ccnl_metalmeccanico_industria_conflavoro.pdf
